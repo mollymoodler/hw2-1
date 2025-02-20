@@ -2,6 +2,7 @@
 #include <cmath>
 #include <vector>
 #include <omp.h>
+#include <algorithm>
 
 // Global variables for binning (specific to OpenMP execution)
 int bin_count;
@@ -26,7 +27,7 @@ void apply_force(particle_t& p1, particle_t& p2) {
     double dy = p2.y - p1.y;
     double r2 = dx * dx + dy * dy;
 
-    if (r2 > cutoff * cutoff || r2 == 0) return; 
+    if (r2 > cutoff * cutoff || r2 == 0) return;
 
     r2 = fmax(r2, min_r * min_r);
     double r = sqrt(r2);
@@ -51,11 +52,14 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     neighbors.resize(bin_count * bin_count);
 
     // Precompute valid neighbor bins
+    #pragma omp parallel for collapse(2)
     for (int bx = 0; bx < bin_count; bx++) {
         for (int by = 0; by < bin_count; by++) {
             int bin_index = bx * bin_count + by;
             if (bx > 0) neighbors[bin_index].push_back((bx - 1) * bin_count + by);
             if (by < bin_count - 1) neighbors[bin_index].push_back(bx * bin_count + (by + 1));
+            if (bx > 0 && by < bin_count - 1) neighbors[bin_index].push_back((bx - 1) * bin_count + (by + 1));
+            if (bx < bin_count - 1 && by < bin_count - 1) neighbors[bin_index].push_back((bx + 1) * bin_count + (by + 1));
         }
     }
 
@@ -72,21 +76,66 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
  * Simulates one step of the particle system (parallel version).
  */
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
+    // Reset forces in parallel
     #pragma omp parallel for
     for (int i = 0; i < num_parts; i++) {
         parts[i].ax = parts[i].ay = 0;
     }
 
-    // Compute forces
-    #pragma omp parallel for collapse(2)
+    // Compute forces (within bin and between neighbor bins)
+    #pragma omp parallel for collapse(2) schedule(dynamic)
     for (int bx = 0; bx < bin_count; bx++) {
         for (int by = 0; by < bin_count; by++) {
             int bin_index = bx * bin_count + by;
+
             for (int i : bins[bin_index]) {
                 for (int j : bins[bin_index]) {
                     if (i < j) apply_force(parts[i], parts[j]);
                 }
+                for (int neighbor_bin : neighbors[bin_index]) {
+                    for (int j : bins[neighbor_bin]) {
+                        apply_force(parts[i], parts[j]);
+                    }
+                }
             }
+        }
+    }
+
+    // Move particles and update bins
+    std::vector<std::vector<int>> new_bins(bin_count * bin_count);
+    
+    #pragma omp parallel
+    {
+        std::vector<std::vector<int>> local_bins(bin_count * bin_count);
+
+        #pragma omp for schedule(dynamic)
+        for (int i = 0; i < num_parts; i++) {
+            int old_bin = get_bin_index(parts[i].x, parts[i].y);
+
+            // Update velocity and position
+            parts[i].vx += parts[i].ax * dt;
+            parts[i].vy += parts[i].ay * dt;
+            parts[i].x += parts[i].vx * dt;
+            parts[i].y += parts[i].vy * dt;
+
+            // Reflect off boundaries
+            while (parts[i].x < 0 || parts[i].x > size) {
+                parts[i].x = parts[i].x < 0 ? -parts[i].x : 2 * size - parts[i].x;
+                parts[i].vx = -parts[i].vx;
+            }
+            while (parts[i].y < 0 || parts[i].y > size) {
+                parts[i].y = parts[i].y < 0 ? -parts[i].y : 2 * size - parts[i].y;
+                parts[i].vy = -parts[i].vy;
+            }
+
+            int new_bin = get_bin_index(parts[i].x, parts[i].y);
+            local_bins[new_bin].push_back(i);
+        }
+
+        // Merge results into global bins
+        #pragma omp critical
+        for (int b = 0; b < bin_count * bin_count; b++) {
+            bins[b].insert(bins[b].end(), local_bins[b].begin(), local_bins[b].end());
         }
     }
 }

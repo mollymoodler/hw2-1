@@ -117,5 +117,6 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
         new_bins[new_bin].push_back(i);
     }
 
-    bins = new_bins;  // Update bins
+    // Update bins
+    bins = new_bins;
 }
