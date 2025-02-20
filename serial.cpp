@@ -3,30 +3,25 @@
 #include <vector>
 #include <algorithm>
 
-// Global variables for binning (specific to serial execution)
+// Global variables
 int bin_count;
 double bin_size;
 std::vector<std::vector<int>> bins;
 std::vector<std::vector<int>> neighbors;
 
-/**
- * Converts a particle's (x, y) position to a bin index.
- */
+// Function to get bin index
 int get_bin_index(double x, double y) {
     int bx = static_cast<int>(x / bin_size);
     int by = static_cast<int>(y / bin_size);
     return bx * bin_count + by;
 }
 
-/**
- * Applies force between two particles.
- */
+// Apply force between two particles
 void apply_force(particle_t& p1, particle_t& p2) {
     double dx = p2.x - p1.x;
     double dy = p2.y - p1.y;
     double r2 = dx * dx + dy * dy;
-
-    if (r2 > cutoff * cutoff || r2 == 0) return; 
+    if (r2 > cutoff * cutoff || r2 == 0) return;
 
     r2 = fmax(r2, min_r * min_r);
     double r = sqrt(r2);
@@ -38,10 +33,8 @@ void apply_force(particle_t& p1, particle_t& p2) {
     p2.ay -= coef * dy;
 }
 
-/**
- * Initializes the simulation with binning.
- */
-void init_simulation(particle_t* parts, int num_parts, double size) {
+// Ensure function signatures match main.cpp
+extern "C" void init_simulation(particle_t* parts, int num_parts, double size) {
     bin_size = cutoff;
     bin_count = static_cast<int>(size / bin_size) + 1;
     bins.resize(bin_count * bin_count);
@@ -61,10 +54,8 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     }
 }
 
-/**
- * Simulates one step of the particle system (serial version).
- */
-void simulate_one_step(particle_t* parts, int num_parts, double size) {
+// Ensure function signatures match main.cpp
+extern "C" void simulate_one_step(particle_t* parts, int num_parts, double size) {
     for (int i = 0; i < num_parts; i++) {
         parts[i].ax = parts[i].ay = 0;
     }
