@@ -1,27 +1,32 @@
 #include "common.h"
 #include <cmath>
 #include <vector>
-#include <omp.h>
 #include <iostream>
+#include <omp.h>
 
-// Global variables for OpenMP
+// Global variables
 int bin_count;
 double bin_size;
 std::vector<std::vector<int>> bins;
 std::vector<std::vector<int>> neighbors;
 
-// Function to get bin index
+/**
+ * Converts a particle's (x, y) position to a bin index.
+ */
 int get_bin_index(double x, double y) {
     int bx = static_cast<int>(x / bin_size);
     int by = static_cast<int>(y / bin_size);
     return bx * bin_count + by;
 }
 
-// Apply force safely in OpenMP
+/**
+ * Applies force between two particles (thread-safe).
+ */
 void apply_force(particle_t& p1, particle_t& p2) {
     double dx = p2.x - p1.x;
     double dy = p2.y - p1.y;
     double r2 = dx * dx + dy * dy;
+
     if (r2 > cutoff * cutoff || r2 == 0) return;
 
     r2 = fmax(r2, min_r * min_r);
@@ -37,7 +42,9 @@ void apply_force(particle_t& p1, particle_t& p2) {
     }
 }
 
-// Ensure function signatures match main.cpp
+/**
+ * Initializes the simulation with binning.
+ */
 void init_simulation(particle_t* parts, int num_parts, double size) {
     std::cout << "Init Simulation (OpenMP): num_parts = " << num_parts 
               << ", size = " << size << std::endl;
@@ -47,16 +54,6 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     bins.resize(bin_count * bin_count);
     neighbors.resize(bin_count * bin_count);
 
-    // Initialize neighbor bins
-    for (int bx = 0; bx < bin_count; bx++) {
-        for (int by = 0; by < bin_count; by++) {
-            int bin_index = bx * bin_count + by;
-            if (bx > 0) neighbors[bin_index].push_back((bx - 1) * bin_count + by);
-            if (by < bin_count - 1) neighbors[bin_index].push_back(bx * bin_count + (by + 1));
-        }
-    }
-
-    // Assign particles to bins (parallelized)
     #pragma omp parallel for
     for (int i = 0; i < num_parts; i++) {
         int bin_index = get_bin_index(parts[i].x, parts[i].y);
@@ -65,14 +62,16 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     }
 }
 
-
-// Ensure function signatures match main.cpp
+/**
+ * Simulates one step of the particle system (parallel version).
+ */
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
     #pragma omp parallel for
     for (int i = 0; i < num_parts; i++) {
         parts[i].ax = parts[i].ay = 0;
     }
 
+    // Compute forces
     #pragma omp parallel for collapse(2)
     for (int bx = 0; bx < bin_count; bx++) {
         for (int by = 0; by < bin_count; by++) {
