@@ -34,7 +34,7 @@ void apply_force(particle_t& p1, particle_t& p2) {
 }
 
 // Ensure function signatures match main.cpp
-extern "C" void init_simulation(particle_t* parts, int num_parts, double size) {
+void init_simulation(particle_t* parts, int num_parts, double size) {
     bin_size = cutoff;
     bin_count = static_cast<int>(size / bin_size) + 1;
     bins.resize(bin_count * bin_count);
@@ -55,7 +55,7 @@ extern "C" void init_simulation(particle_t* parts, int num_parts, double size) {
 }
 
 // Ensure function signatures match main.cpp
-extern "C" void simulate_one_step(particle_t* parts, int num_parts, double size) {
+void simulate_one_step(particle_t* parts, int num_parts, double size) {
     for (int i = 0; i < num_parts; i++) {
         parts[i].ax = parts[i].ay = 0;
     }
