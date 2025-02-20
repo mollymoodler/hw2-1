@@ -2,6 +2,7 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <iostream>
 
 // Global variables
 int bin_count;
@@ -35,11 +36,15 @@ void apply_force(particle_t& p1, particle_t& p2) {
 
 // Ensure function signatures match main.cpp
 void init_simulation(particle_t* parts, int num_parts, double size) {
+    std::cout << "Init Simulation (Serial): num_parts = " << num_parts 
+              << ", size = " << size << std::endl;
+
     bin_size = cutoff;
     bin_count = static_cast<int>(size / bin_size) + 1;
     bins.resize(bin_count * bin_count);
     neighbors.resize(bin_count * bin_count);
 
+    // Initialize neighbor bins
     for (int bx = 0; bx < bin_count; bx++) {
         for (int by = 0; by < bin_count; by++) {
             int bin_index = bx * bin_count + by;
@@ -48,11 +53,13 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
         }
     }
 
+    // Assign particles to bins
     for (int i = 0; i < num_parts; i++) {
         int bin_index = get_bin_index(parts[i].x, parts[i].y);
         bins[bin_index].push_back(i);
     }
 }
+
 
 // Ensure function signatures match main.cpp
 void simulate_one_step(particle_t* parts, int num_parts, double size) {

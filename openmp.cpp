@@ -2,6 +2,7 @@
 #include <cmath>
 #include <vector>
 #include <omp.h>
+#include <iostream>
 
 // Global variables for OpenMP
 int bin_count;
@@ -38,11 +39,24 @@ void apply_force(particle_t& p1, particle_t& p2) {
 
 // Ensure function signatures match main.cpp
 void init_simulation(particle_t* parts, int num_parts, double size) {
+    std::cout << "Init Simulation (OpenMP): num_parts = " << num_parts 
+              << ", size = " << size << std::endl;
+
     bin_size = cutoff;
     bin_count = static_cast<int>(size / bin_size) + 1;
     bins.resize(bin_count * bin_count);
     neighbors.resize(bin_count * bin_count);
 
+    // Initialize neighbor bins
+    for (int bx = 0; bx < bin_count; bx++) {
+        for (int by = 0; by < bin_count; by++) {
+            int bin_index = bx * bin_count + by;
+            if (bx > 0) neighbors[bin_index].push_back((bx - 1) * bin_count + by);
+            if (by < bin_count - 1) neighbors[bin_index].push_back(bx * bin_count + (by + 1));
+        }
+    }
+
+    // Assign particles to bins (parallelized)
     #pragma omp parallel for
     for (int i = 0; i < num_parts; i++) {
         int bin_index = get_bin_index(parts[i].x, parts[i].y);
@@ -50,6 +64,7 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
         bins[bin_index].push_back(i);
     }
 }
+
 
 // Ensure function signatures match main.cpp
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
