@@ -1,13 +1,14 @@
 #include "common.h"
 #include <cmath>
 #include <vector>
-#include <iostream>
+#include <algorithm>
+#include <unordered_set> // Used for efficient cross-boundary tracking
 
-// Global variables
-int bin_count;
-double bin_size;
-std::vector<std::vector<int>> bins;
-std::vector<std::vector<int>> neighbors;
+// Global variables for binning
+int bin_count;              // Number of bins per row/column
+double bin_size;            // Size of each bin (equal to cutoff distance)
+std::vector<std::vector<int>> bins;  // Bins storing particle indices
+std::vector<std::vector<int>> neighbors;  // Precomputed valid neighbor bins for each bin
 
 /**
  * Converts a particle's (x, y) position to a bin index.
@@ -19,47 +20,81 @@ int get_bin_index(double x, double y) {
 }
 
 /**
- * Applies force between two particles.
+ * Computes the force exerted between two particles and updates both.
+ * Uses Newton's Third Law: F(A on B) = -F(B on A).
  */
-void apply_force(particle_t& p1, particle_t& p2) {
-    double dx = p2.x - p1.x;
-    double dy = p2.y - p1.y;
+void apply_force(particle_t& particle, particle_t& neighbor) {
+    double dx = neighbor.x - particle.x;
+    double dy = neighbor.y - particle.y;
     double r2 = dx * dx + dy * dy;
 
-    if (r2 > cutoff * cutoff || r2 == 0) return;
+    if (r2 > cutoff * cutoff || r2 == 0) return; // Ignore if too far or same particle
 
     r2 = fmax(r2, min_r * min_r);
     double r = sqrt(r2);
-    double coef = (1 - cutoff / r) / r2 / mass;
 
-    p1.ax += coef * dx;
-    p1.ay += coef * dy;
-    p2.ax -= coef * dx;
-    p2.ay -= coef * dy;
+    // Compute repulsive force
+    double coef = (1 - cutoff / r) / r2 / mass;
+    
+    // Update accelerations for both particles (Newton’s Third Law)
+    double ax = coef * dx;
+    double ay = coef * dy;
+
+    particle.ax += ax;
+    particle.ay += ay;
+    neighbor.ax -= ax; // Opposite direction
+    neighbor.ay -= ay;
 }
 
 /**
- * Initializes the simulation with binning.
+ * Updates the position and velocity of a particle using the Velocity Verlet method.
+ * Returns `true` if the particle **crossed a bin boundary**.
+ */
+bool move(particle_t& p, double size, int& old_bin) {
+    int new_bin = get_bin_index(p.x, p.y); // Compute bin before move
+
+    p.vx += p.ax * dt;
+    p.vy += p.ay * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+
+    // Reflect particles off the walls
+    while (p.x < 0 || p.x > size) {
+        p.x = p.x < 0 ? -p.x : 2 * size - p.x;
+        p.vx = -p.vx;
+    }
+    while (p.y < 0 || p.y > size) {
+        p.y = p.y < 0 ? -p.y : 2 * size - p.y;
+        p.vy = -p.vy;
+    }
+
+    old_bin = new_bin; // Store original bin
+    return (new_bin != get_bin_index(p.x, p.y)); // Return true if crossed a bin
+}
+
+/**
+ * Initializes the binning structure and precomputes neighbor bins.
  */
 void init_simulation(particle_t* parts, int num_parts, double size) {
-    std::cout << "Init Simulation (Serial): num_parts = " << num_parts 
-              << ", size = " << size << std::endl;
-
     bin_size = cutoff;
-    bin_count = static_cast<int>(size / bin_size) + 1;
+    bin_count = (int)ceil(size / bin_size);
     bins.resize(bin_count * bin_count);
     neighbors.resize(bin_count * bin_count);
 
-    // Precompute valid neighbor bins
+    // Precompute valid neighbor bins for each bin  // trivial to parallelize
     for (int bx = 0; bx < bin_count; bx++) {
         for (int by = 0; by < bin_count; by++) {
             int bin_index = bx * bin_count + by;
-            if (bx > 0) neighbors[bin_index].push_back((bx - 1) * bin_count + by);
-            if (by < bin_count - 1) neighbors[bin_index].push_back(bx * bin_count + (by + 1));
+
+            // Compute the pre-selected 4 neighbors: left, top, top-left, top-right
+            if (bx > 0) neighbors[bin_index].push_back((bx - 1) * bin_count + by);     // Left
+            if (by < bin_count - 1) neighbors[bin_index].push_back(bx * bin_count + (by + 1)); // Top
+            if (bx > 0 && by < bin_count - 1) neighbors[bin_index].push_back((bx - 1) * bin_count + (by + 1)); // Top-left
+            if (bx < bin_count - 1 && by < bin_count - 1) neighbors[bin_index].push_back((bx + 1) * bin_count + (by + 1)); // Top-right
         }
     }
 
-    // Assign particles to bins
+    // Assign each particle to a bin  // trivial to parallelize
     for (int i = 0; i < num_parts; i++) {
         int bin_index = get_bin_index(parts[i].x, parts[i].y);
         bins[bin_index].push_back(i);
@@ -67,23 +102,26 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
 }
 
 /**
- * Simulates one step of the particle system (serial version).
+ * Simulates a single time step of the particle system.
  */
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
-    // Reset forces
-    for (int i = 0; i < num_parts; i++) {
-        parts[i].ax = parts[i].ay = 0;
-    }
-
-    // Compute forces using bins
+    // Step 1: Compute forces using precomputed neighbors & avoiding redundancy  // NOT SURE HOW WE CAN AVOID RACE CONDITIONS HERE
     for (int bx = 0; bx < bin_count; bx++) {
         for (int by = 0; by < bin_count; by++) {
             int bin_index = bx * bin_count + by;
+
             for (int i : bins[bin_index]) {
+                parts[i].ax = parts[i].ay = 0; // Reset acceleration
+            }
+
+            // Apply forces within current bin
+            for (int i : bins[bin_index]) {   // Use critical section here
                 for (int j : bins[bin_index]) {
-                    if (i < j) apply_force(parts[i], parts[j]);
+                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
                 }
-                for (int neighbor_bin : neighbors[bin_index]) {
+
+                // Apply forces with precomputed neighbor bins
+                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
                     for (int j : bins[neighbor_bin]) {
                         apply_force(parts[i], parts[j]);
                     }
@@ -92,30 +130,19 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
         }
     }
 
-    // Move particles and update bins
-    std::vector<std::vector<int>> new_bins(bin_count * bin_count);
+    // Use barrier here
+
+    // Step 2: Move particles and update bin assignments **only for crossing particles**  // Particle movement is trivial to parallelize. WILL THE BOUNDARY CROSSING PART CAUSE RACE CONDITION?
     for (int i = 0; i < num_parts; i++) {
-        int old_bin = get_bin_index(parts[i].x, parts[i].y);
+        int old_bin;
+        if (move(parts[i], size, old_bin)) { // If the particle moved to a different bin
+            int new_bin = get_bin_index(parts[i].x, parts[i].y);
 
-        // Update velocity and position
-        parts[i].vx += parts[i].ax * dt;
-        parts[i].vy += parts[i].ay * dt;
-        parts[i].x += parts[i].vx * dt;
-        parts[i].y += parts[i].vy * dt;
+            bins[old_bin].erase(remove(bins[old_bin].begin(), bins[old_bin].end(), i), bins[old_bin].end());
 
-        // Reflect off boundaries
-        while (parts[i].x < 0 || parts[i].x > size) {
-            parts[i].x = parts[i].x < 0 ? -parts[i].x : 2 * size - parts[i].x;
-            parts[i].vx = -parts[i].vx;
+            
+            bins[new_bin].push_back(i);
+
         }
-        while (parts[i].y < 0 || parts[i].y > size) {
-            parts[i].y = parts[i].y < 0 ? -parts[i].y : 2 * size - parts[i].y;
-            parts[i].vy = -parts[i].vy;
-        }
-
-        int new_bin = get_bin_index(parts[i].x, parts[i].y);
-        new_bins[new_bin].push_back(i);
     }
-
-    bins = new_bins;  // Update bins
 }
