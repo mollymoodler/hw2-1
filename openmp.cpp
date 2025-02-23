@@ -99,12 +99,14 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
         }
     }
 
+    omp_lock_t bin_locks2[bin_count * bin_count];
+
     // Initialize locks
     for (int bx = 0; bx < bin_count; bx++) {
-		for (int by = 0; by < bin_count; by++) {
-			int bin_index = bx * bin_count + by;
-        	omp_init_lock(&bin_locks[bin_index]);
-		}
+        for (int by = 0; by < bin_count; by++) {
+            int bin_index = bx * bin_count + by;
+            omp_init_lock(&bin_locks2[bin_index]);
+        }
     }
 	
 	// Assign each particle to a bin  // trivial to parallelize
@@ -196,30 +198,37 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
 
 	
 	// Step 2: Move particles and update bin assignments **only for crossing particles**  // Particle movement is trivial to parallelize. WILL THE BOUNDARY CROSSING PART CAUSE RACE CONDITION?
-    //#pragma omp parallel for
-	for (int i = 0; i < num_parts; i++) {
+    #pragma omp parallel for
+    for (int i = 0; i < num_parts; i++) {
         int old_bin;
         if (move(parts[i], size, old_bin)) { // If the particle moved to a different bin
             int new_bin = get_bin_index(parts[i].x, parts[i].y);
-			
-			omp_set_lock(&bin_locks2[old_bin]);
-			bins[old_bin].erase(remove(bins[old_bin].begin(), bins[old_bin].end(), i), bins[old_bin].end());
-			omp_unset_lock(&bin_locks2[old_bin]);
 
-            
-            omp_set_lock(&bin_locks2[new_bin]);
-			//bins[new_bin].push_back(i);   // uncommenting causes segfault, still trying to debug
-			omp_unset_lock(&bin_locks2[new_bin]);
+            // Safe erase from old bin
+            omp_set_lock(&bin_locks2[old_bin]);
+            auto it = std::find(bins[old_bin].begin(), bins[old_bin].end(), i);
+            if (it != bins[old_bin].end()) {
+                bins[old_bin].erase(it);  // Remove only if found
+            }
+            omp_unset_lock(&bin_locks2[old_bin]);
 
+            // Bounds check before adding to new bin
+            if (new_bin >= 0 && new_bin < bin_count * bin_count) {
+                omp_set_lock(&bin_locks2[new_bin]);
+                bins[new_bin].push_back(i);
+                omp_unset_lock(&bin_locks2[new_bin]);
+            } else {
+                printf("Warning: Particle %d moved to invalid bin %d\n", i, new_bin);
+            }
         }
     }
 	
 	// Destroy locks
 	for (int bx = 0; bx < bin_count; bx++) {
-		for (int by = 0; by < bin_count; by++) {
-			int bin_index = bx * bin_count + by;
-        	omp_destroy_lock(&bin_locks2[bin_index]);
-		}
-    }
+        for (int by = 0; by < bin_count; by++) {
+            int bin_index = bx * bin_count + by;
+            omp_destroy_lock(&bin_locks2[bin_index]);
+        }
+}
 
 }
