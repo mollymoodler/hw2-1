@@ -2,8 +2,10 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
-#include <omp.h>
 #include <unordered_set> // Used for efficient cross-boundary tracking
+#include <omp.h>
+#include <cstdio>
+
 
 // Global variables for binning
 int bin_count;              // Number of bins per row/column
@@ -81,9 +83,11 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
     bin_count = (int)ceil(size / bin_size);
     bins.resize(bin_count * bin_count);
     neighbors.resize(bin_count * bin_count);
+	omp_lock_t bin_locks[bin_count * bin_count];
 
     // Precompute valid neighbor bins for each bin  // trivial to parallelize
-    for (int bx = 0; bx < bin_count; bx++) {
+    #pragma omp parallel for collapse(2)
+	for (int bx = 0; bx < bin_count; bx++) {
         for (int by = 0; by < bin_count; by++) {
             int bin_index = bx * bin_count + by;
 
@@ -95,10 +99,29 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
         }
     }
 
-    // Assign each particle to a bin  // trivial to parallelize
-    for (int i = 0; i < num_parts; i++) {
+    // Initialize locks
+    for (int bx = 0; bx < bin_count; bx++) {
+		for (int by = 0; by < bin_count; by++) {
+			int bin_index = bx * bin_count + by;
+        	omp_init_lock(&bin_locks[bin_index]);
+		}
+    }
+	
+	// Assign each particle to a bin  // trivial to parallelize
+    #pragma omp parallel for
+	for (int i = 0; i < num_parts; i++) {
         int bin_index = get_bin_index(parts[i].x, parts[i].y);
-        bins[bin_index].push_back(i);
+		omp_set_lock(&bin_locks[bin_index]);
+		bins[bin_index].push_back(i);
+		omp_unset_lock(&bin_locks[bin_index]);
+    }
+
+	// Destroy locks
+	for (int bx = 0; bx < bin_count; bx++) {
+		for (int by = 0; by < bin_count; by++) {
+			int bin_index = bx * bin_count + by;
+        	omp_destroy_lock(&bin_locks[bin_index]);
+		}
     }
 }
 
@@ -107,249 +130,96 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
  */
 void simulate_one_step(particle_t* parts, int num_parts, double size) {
     // Step 1: Compute forces using precomputed neighbors & avoiding redundancy  // NOT SURE HOW WE CAN AVOID RACE CONDITIONS HERE
-    for (int bx = 0; bx < bin_count; bx += 2) {
-        #pragma omp parallel for 
-        {
-        for (int by = 0; by < bin_count; by += 3) {
-            int bin_index = bx * bin_count + by;
-
-            for (int i : bins[bin_index]) {
-                parts[i].ax = parts[i].ay = 0; // Reset acceleration
-            }
-
-            // Apply forces within current bin
-            for (int i : bins[bin_index]) {   // Use critical section here
-                for (int j : bins[bin_index]) {
-                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
-                }
-
-                // Apply forces with precomputed neighbor bins
-                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
-                    for (int j : bins[neighbor_bin]) {
-                        apply_force(parts[i], parts[j]);
-                    }
-                }
-            }
-        }
-        }
-        #pragma omp parallel for 
-        {
-        for (int by = 1; by < bin_count; by += 3) {
-            int bin_index = bx * bin_count + by;
-
-            for (int i : bins[bin_index]) {
-                parts[i].ax = parts[i].ay = 0; // Reset acceleration
-            }
-
-            // Apply forces within current bin
-            for (int i : bins[bin_index]) {   // Use critical section here
-                for (int j : bins[bin_index]) {
-                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
-                }
-
-                // Apply forces with precomputed neighbor bins
-                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
-                    for (int j : bins[neighbor_bin]) {
-                        apply_force(parts[i], parts[j]);
-                    }
-                }
-            }
-        }
-        }
-        #pragma omp parallel for 
-        {
-        for (int by = 2; by < bin_count; by += 3) {
-            int bin_index = bx * bin_count + by;
-
-            for (int i : bins[bin_index]) {
-                parts[i].ax = parts[i].ay = 0; // Reset acceleration
-            }
-
-            // Apply forces within current bin
-            for (int i : bins[bin_index]) {   // Use critical section here
-                for (int j : bins[bin_index]) {
-                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
-                }
-
-                // Apply forces with precomputed neighbor bins
-                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
-                    for (int j : bins[neighbor_bin]) {
-                        apply_force(parts[i], parts[j]);
-                    }
-                }
-            }
-        }
-        }
-    }
-
-
-    for (int bx = 1; bx < bin_count; bx += 2) {
-        #pragma omp parallel for 
-        {
-        for (int by = 0; by < bin_count; by++) {
-            int bin_index = bx * bin_count + by;
-
-            for (int i : bins[bin_index]) {
-                parts[i].ax = parts[i].ay = 0; // Reset acceleration
-            }
-
-            // Apply forces within current bin
-            for (int i : bins[bin_index]) {   // Use critical section here
-                for (int j : bins[bin_index]) {
-                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
-                }
-
-                // Apply forces with precomputed neighbor bins
-                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
-                    for (int j : bins[neighbor_bin]) {
-                        apply_force(parts[i], parts[j]);
-                    }
-                }
-            }
-        }
-        }
-        #pragma omp parallel for 
-        {
-        for (int by = 1; by < bin_count; by += 3) {
-            int bin_index = bx * bin_count + by;
-
-            for (int i : bins[bin_index]) {
-                parts[i].ax = parts[i].ay = 0; // Reset acceleration
-            }
-
-            // Apply forces within current bin
-            for (int i : bins[bin_index]) {   // Use critical section here
-                for (int j : bins[bin_index]) {
-                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
-                }
-
-                // Apply forces with precomputed neighbor bins
-                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
-                    for (int j : bins[neighbor_bin]) {
-                        apply_force(parts[i], parts[j]);
-                    }
-                }
-            }
-        }
-        }
-        #pragma omp parallel for 
-        {
-        for (int by = 2; by < bin_count; by += 3) {
-            int bin_index = bx * bin_count + by;
-
-            for (int i : bins[bin_index]) {
-                parts[i].ax = parts[i].ay = 0; // Reset acceleration
-            }
-
-            // Apply forces within current bin
-            for (int i : bins[bin_index]) {   // Use critical section here
-                for (int j : bins[bin_index]) {
-                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
-                }
-
-                // Apply forces with precomputed neighbor bins
-                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
-                    for (int j : bins[neighbor_bin]) {
-                        apply_force(parts[i], parts[j]);
-                    }
-                }
-            }
-        }
-        }
-    }
-
-    // Use barrier here
-
-    // Step 2: Move particles and update bin assignments **only for crossing particles**  // Particle movement is trivial to parallelize. WILL THE BOUNDARY CROSSING PART CAUSE RACE CONDITION?
-    for (int bx = 0; bx < bin_count; bx += 2) {
-        #pragma omp parallel for 
-        {
-        for (int by = 0; by < bin_count; by += 3) {
-            int bin_index = bx * bin_count + by;
-            
-            for (int i = 0 : bins[bin_index]) {
-                int old_bin;
-                if (move(parts[i], size, old_bin)) { // If the particle moved to a different bin
-                    int new_bin = get_bin_index(parts[i].x, parts[i].y);
-                    // lock old bin 
-                    bins[old_bin].erase(remove(bins[old_bin].begin(), bins[old_bin].end(), i), bins[old_bin].end());
-                    // unlock old bin
-                    // lock new bin
-                    bins[new_bin].push_back(i);
-                    // lock old pin
-                    // weak scaling stong scaling graph 
-
-                }
-            }
-
-            for (int i : bins[bin_index]) {
-                parts[i].ax = parts[i].ay = 0; // Reset acceleration
-            }
-
-            // Apply forces within current bin
-            for (int i : bins[bin_index]) {   // Use critical section here
-                for (int j : bins[bin_index]) {
-                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
-                }
-
-                // Apply forces with precomputed neighbor bins
-                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
-                    for (int j : bins[neighbor_bin]) {
-                        apply_force(parts[i], parts[j]);
-                    }
-                }
-            }
-        }
-        }
-        #pragma omp parallel for 
-        {
-        for (int by = 1; by < bin_count; by += 3) {
-            int bin_index = bx * bin_count + by;
-
-            for (int i : bins[bin_index]) {
-                parts[i].ax = parts[i].ay = 0; // Reset acceleration
-            }
-
-            // Apply forces within current bin
-            for (int i : bins[bin_index]) {   // Use critical section here
-                for (int j : bins[bin_index]) {
-                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
-                }
-
-                // Apply forces with precomputed neighbor bins
-                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
-                    for (int j : bins[neighbor_bin]) {
-                        apply_force(parts[i], parts[j]);
-                    }
-                }
-            }
-        }
-        }
-        #pragma omp parallel for 
-        {
-        for (int by = 2; by < bin_count; by += 3) {
-            int bin_index = bx * bin_count + by;
-
-            for (int i : bins[bin_index]) {
-                parts[i].ax = parts[i].ay = 0; // Reset acceleration
-            }
-
-            // Apply forces within current bin
-            for (int i : bins[bin_index]) {   // Use critical section here
-                for (int j : bins[bin_index]) {
-                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
-                }
-
-                // Apply forces with precomputed neighbor bins
-                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
-                    for (int j : bins[neighbor_bin]) {
-                        apply_force(parts[i], parts[j]);
-                    }
-                }
-            }
-        }
-        }
-    }
     
+	// even rows
+	#pragma omp parallel for
+	for (int by = 0; by < bin_count; by+=2) {
+        for (int bx = 0; bx < bin_count; bx++) {
+            int bin_index = bx * bin_count + by;
+
+            for (int i : bins[bin_index]) {
+                parts[i].ax = parts[i].ay = 0; // Reset acceleration
+            }
+
+            // Apply forces within current bin
+            for (int i : bins[bin_index]) {   // Use critical section here
+                for (int j : bins[bin_index]) {
+                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
+                }
+
+                // Apply forces with precomputed neighbor bins
+                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
+                    for (int j : bins[neighbor_bin]) {
+                        apply_force(parts[i], parts[j]);
+                    }
+                }
+            }
+        }
+	}
+
+	// Odd rows
+	#pragma omp parallel for
+	for (int by = 1; by < bin_count; by+=2) {
+        for (int bx = 0; bx < bin_count; bx++) {
+            int bin_index = bx * bin_count + by;
+
+            for (int i : bins[bin_index]) {
+                parts[i].ax = parts[i].ay = 0; // Reset acceleration
+            }
+
+            // Apply forces within current bin
+            for (int i : bins[bin_index]) {   // Use critical section here
+                for (int j : bins[bin_index]) {
+                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
+                }
+
+                // Apply forces with precomputed neighbor bins
+                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
+                    for (int j : bins[neighbor_bin]) {
+                        apply_force(parts[i], parts[j]);
+                    }
+                }
+            }
+        }
+    }
+
+
+	omp_lock_t bin_locks[bin_count * bin_count];
+	
+	// Initialize locks
+    for (int bx = 0; bx < bin_count; bx++) {
+		for (int by = 0; by < bin_count; by++) {
+			int bin_index = bx * bin_count + by;
+        	omp_init_lock(&bin_locks[bin_index]);
+		}
+    }
+
+	
+	// Step 2: Move particles and update bin assignments **only for crossing particles**  // Particle movement is trivial to parallelize. WILL THE BOUNDARY CROSSING PART CAUSE RACE CONDITION?
+    //#pragma omp parallel for
+	for (int i = 0; i < num_parts; i++) {
+        int old_bin;
+        if (move(parts[i], size, old_bin)) { // If the particle moved to a different bin
+            int new_bin = get_bin_index(parts[i].x, parts[i].y);
+			
+			omp_set_lock(&bin_locks2[old_bin]);
+			bins[old_bin].erase(remove(bins[old_bin].begin(), bins[old_bin].end(), i), bins[old_bin].end());
+			omp_unset_lock(&bin_locks2[old_bin]);
+
+            
+            omp_set_lock(&bin_locks2[new_bin]);
+			//bins[new_bin].push_back(i);   // uncommenting causes segfault, still trying to debug
+			omp_unset_lock(&bin_locks2[new_bin]);
+
+        }
+    }
+	
+	// Destroy locks
+	for (int bx = 0; bx < bin_count; bx++) {
+		for (int by = 0; by < bin_count; by++) {
+			int bin_index = bx * bin_count + by;
+        	omp_destroy_lock(&bin_locks2[bin_index]);
+		}
+    }
 
 }
