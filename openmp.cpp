@@ -47,8 +47,6 @@ void apply_force(particle_t& particle, particle_t& neighbor) {
 
     particle.ax += ax;
     particle.ay += ay;
-    neighbor.ax -= ax; // Opposite direction
-    neighbor.ay -= ay;
 }
 
 /**
@@ -103,6 +101,10 @@ void init_simulation(particle_t* parts, int num_parts, double size) {
             if (by < bin_count - 1) neighbors[bin_index].push_back(bx * bin_count + (by + 1)); // Top
             if (bx > 0 && by < bin_count - 1) neighbors[bin_index].push_back((bx - 1) * bin_count + (by + 1)); // Top-left
             if (bx < bin_count - 1 && by < bin_count - 1) neighbors[bin_index].push_back((bx + 1) * bin_count + (by + 1)); // Top-right
+            if (bx < bin_count - 1) neighbors[bin_index].push_back((bx + 1) * bin_count); // Right
+            if (by > 0) neighbors[bin_index].push_back(bin_count + (by - 1)); // Bottom
+            if (bx > 0 && by > 0) neighbors[bin_index].push_back((bx - 1) * bin_count + (by - 1)); // Bottom-left
+            if (bx < bin_count - 1 && by > 0) neighbors[bin_index].push_back((bx + 1) * bin_count + (by - 1)); // Bottom-right
         }
     }
 	
@@ -124,11 +126,9 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
 
 
     // Step 1: Compute forces using precomputed neighbors & avoiding redundancy  // NOT SURE HOW WE CAN AVOID RACE CONDITIONS HERE
-    
-	// even rows
-	#pragma omp for
-	for (int by = 0; by < bin_count; by+=2) {
-        for (int bx = 0; bx < bin_count; bx++) {
+	#pragma omp for collapse(2)
+	for (int bx = 0; bx < bin_count; bx++) {
+        for (int by = 0; by < bin_count; by++) {
             int bin_index = bx * bin_count + by;
 
             for (int i : bins[bin_index]) {
@@ -140,7 +140,6 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
                 for (int j : bins[bin_index]) {
                     if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
                 }
-
                 // Apply forces with precomputed neighbor bins
                 for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
                     for (int j : bins[neighbor_bin]) {
@@ -150,32 +149,6 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
             }
         }
 	}
-
-	// Odd rows
-	#pragma omp for
-	for (int by = 1; by < bin_count; by+=2) {
-        for (int bx = 0; bx < bin_count; bx++) {
-            int bin_index = bx * bin_count + by;
-
-            for (int i : bins[bin_index]) {
-                parts[i].ax = parts[i].ay = 0; // Reset acceleration
-            }
-
-            // Apply forces within current bin
-            for (int i : bins[bin_index]) {   // Use critical section here
-                for (int j : bins[bin_index]) {
-                    if (i < j) apply_force(parts[i], parts[j]); // Avoid duplicate calculations
-                }
-
-                // Apply forces with precomputed neighbor bins
-                for (int neighbor_bin : neighbors[bin_index]) { // use critical section here
-                    for (int j : bins[neighbor_bin]) {
-                        apply_force(parts[i], parts[j]);
-                    }
-                }
-            }
-        }
-    }
 
 	
 	// Step 2: Move particles  //and update bin assignments **only for crossing particles**  // Particle movement is trivial to parallelize. WILL THE BOUNDARY CROSSING PART CAUSE RACE CONDITION?;
@@ -193,8 +166,6 @@ void simulate_one_step(particle_t* parts, int num_parts, double size) {
         bins[i].clear();
     }
     
-    
-    // SEG FAULT OCCURRING HERE
     #pragma omp for
 	for (int i = 0; i < num_parts; i++) {
         int bin_index = get_bin_index(parts[i].x, parts[i].y);
